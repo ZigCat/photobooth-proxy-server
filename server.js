@@ -3,12 +3,10 @@ const express = require('express');
 const proxy = require('express-http-proxy');
 const axios = require('axios');
 const cors = require('cors');
-const rateLimit = require('express-rate-limit');
 const app = express();
 
 const PORT = process.env.PORT || 8080;
 
-// Middleware
 app.use(cors());
 app.use(express.json());
 
@@ -24,13 +22,6 @@ const apiKeyAuth = (req, res, next) => {
   next();
 };
 
-// Rate limiter
-const limiter = rateLimit({
-  windowMs: 10 * 60 * 1000,
-  max: 100,
-  message: { error: 'Слишком много запросов, попробуйте позже' }
-});
-
 // Simple health check
 app.get('/', (req, res) => {
   res.send('Прокси-сервер работает!');
@@ -39,15 +30,14 @@ app.get('/', (req, res) => {
 app.use(
   '/api',
   apiKeyAuth,
-  limiter,
   proxy(process.env.BASE_URL, {
     proxyReqPathResolver: (req) => {
-        const path = req.originalUrl.replace(/^\/api/, '');
-        const queryParams = new URLSearchParams(req.query);
-        queryParams.set('api_key', process.env.SMARTVEND_API_KEY);
-        const fullPath = `${path}?${queryParams.toString()}`;
-        console.log('Proxying to:', `${process.env.BASE_URL}${fullPath}`);
-        return fullPath;
+      const path = req.originalUrl.replace(/^\/api/, '');
+      const queryParams = new URLSearchParams(req.query);
+      queryParams.set('api_key', process.env.SMARTVEND_API_KEY);
+      const fullPath = `${path}?${queryParams.toString()}`;
+      console.log('Proxying to:', `${process.env.BASE_URL}${fullPath}`);
+      return fullPath;
     },
     proxyReqOptDecorator: (proxyReqOpts, srcReq) => {
       proxyReqOpts.headers = { ...srcReq.headers };
@@ -55,15 +45,31 @@ app.use(
       delete proxyReqOpts.headers.connection;
       delete proxyReqOpts.headers['x-proxy-key'];
       delete proxyReqOpts.headers.proxy_key;
+        const noBody =
+            !srcReq.body ||
+            typeof srcReq.body !== 'object' ||
+            Object.keys(srcReq.body).length === 0;
 
-      if (['POST', 'PUT', 'PATCH'].includes(srcReq.method)) {
-        proxyReqOpts.body = srcReq.body;
-        console.log('Request body:', proxyReqOpts.body);
-        if (srcReq.headers['content-type']) {
-          proxyReqOpts.headers['Content-Type'] = srcReq.headers['content-type'];
+        if (noBody) {
+            delete proxyReqOpts.headers['content-type'];
+            delete proxyReqOpts.headers['content-length'];
         }
+
+        return proxyReqOpts;
+    },
+    proxyReqBodyDecorator: (bodyContent, srcReq) => {
+      if (
+        ['POST', 'PUT', 'PATCH'].includes(srcReq.method) &&
+        srcReq.body &&
+        typeof srcReq.body === 'object' &&
+        Object.keys(srcReq.body).length > 0
+      ) {
+        console.log('Sending request body:', srcReq.body);
+        return JSON.stringify(srcReq.body);
+      } else {
+        console.log('Empty or no request body, skipping body send');
+        return '';
       }
-      return proxyReqOpts;
     },
     userResDecorator: (proxyRes, proxyResData, userReq, userRes) => {
       console.log('Response from target server:', {
